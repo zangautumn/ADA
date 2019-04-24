@@ -1,0 +1,240 @@
+---
+title: "Final_Project_ADA"
+author: "Giang Pham"
+date: "4/10/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r Loading Packages}
+##open libraries
+library(haven) #for read sav
+library(magrittr) #for piping
+library(nnet) #for multinomial logistic regression
+library(tidyverse) #for various packages
+library(knitr) #for making tables
+library(sjlabelled) #show labels on table
+library(labelled) #assign names for values
+library(ggplot2) #for making plots
+library(lmtest) #for lrtest
+library(lme4) #comparing coefs
+library(gmodels) #for crosstab tables
+library(car) #to get vif
+library(mice) #check missing values
+
+```
+
+##Setting up the data
+```{r Setting Data}
+AddHeealth <- read_sav("21600-0022-Data.sav")
+
+Final_Project <- AddHeealth %>%
+  select(AID, H4OD1Y, IYEAR4, BIO_SEX4, H4ED2, H4EC18, H4TO35, H4TO36, 
+         H4GH8, H4DA23, H4TO5, H4BMICLS) %>%
+  mutate(Age=IYEAR4 - H4OD1Y, 
+         Obese = case_when(H4BMICLS<=3 ~ 0,
+                          H4BMICLS>=4 ~ 1),
+         Edu_cat = case_when(H4ED2 <=3 ~ 1,
+                             H4ED2 <=5 & H4ED2 >3 ~ 2,
+                             H4ED2 <=7 & H4ED2 >5 ~ 3,
+                             H4ED2 <=13 & H4ED2 >7 ~ 4),
+         Smoking = case_when(H4TO5==0 ~ 0,
+                             H4TO5>=1 ~ 1),
+         Drinking = case_when(BIO_SEX4==1 & H4TO35<=4 & H4TO35>0 & H4TO36<=4 ~ 0,
+                              BIO_SEX4==1 & H4TO35>=5 & H4TO36<=2 ~ 0,
+                              BIO_SEX4==1 & H4TO35<5 & H4TO36>=5 ~ 1,
+                              BIO_SEX4==1 & H4TO35>=5 & H4TO36>4 ~ 1 ,
+                              BIO_SEX4==1 & H4TO35>=5 & H4TO36==3 & H4TO36==4 ~ 1,
+                              BIO_SEX4==2 & H4TO35<=4 & H4TO35>0 & H4TO36<=3 ~ 0,
+                              BIO_SEX4==2 & H4TO35>=5 & H4TO36==1 ~ 0,
+                              BIO_SEX4==2 & H4TO35<5 & H4TO36>=4 ~ 1,
+                              BIO_SEX4==2 & H4TO35>=5 & H4TO36>=4 ~ 1,
+                              BIO_SEX4==2 & H4TO35>=5 & H4TO36==2 & H4TO36==3 ~ 1),
+         Edu_cat=factor(Edu_cat, 1:4, c("High School", "Vocation", "College", "Higher Education")),
+         Smoking=factor(Smoking, 0:1, c("No", "Yes")),
+         Drinking=factor(Drinking, 0:1 , c("Moderate", "Excessive")),
+         Obese=factor(Obese, 0:1, c("No", "Yes")), 
+         Sex=factor(BIO_SEX4, 1:2, c("Male","Female")),
+         Program=factor(H4EC18, 0:1, c("No", "Yes")), 
+         Fastfood=H4GH8,
+         Playing_cgames=H4DA23)
+  
+Final_Project <- na.omit(Final_Project) #getting complete observations for all
+#variables in the model
+
+#double-checking the recoding for Obese variable
+
+table(as_label(Final_Project$H4BMICLS))
+table(as_label(Final_Project$Obese))
+
+#double-checking the recoding for Edu_cat variable
+table(as_label(Final_Project$H4ED2))
+table(as_label(Final_Project$Edu_cat))
+
+#double-checking the recoding for Drinking variable
+
+Male <- filter(Final_Project, BIO_SEX4==1) #filter the data by male
+table(Male$H4TO35, Male$H4TO36) #get frequency table for male only
+Female <- filter(Final_Project, BIO_SEX4==2) #filter the data by female
+table(Female$H4TO35,Female$H4TO36) #get frequency table for female only
+table(as_label(Male$Drinking)) #compare results of the new variable with the old variables
+table(as_label(Female$Drinking))
+
+#double-checking the recoding for Smoking variable
+table(as_label(Final_Project$H4TO5))
+table(as_label(Final_Project$Smoking))
+
+md.pattern(Final_Project)
+```
+
+
+##Descriptive statistics
+
+###Drinking
+```{r}
+CrossTable(Final_Project$Drinking, Final_Project$Obese,
+           format = c("SPSS"))
+```
+
+
+###Sex
+```{r}
+CrossTable(Final_Project$Sex, Final_Project$Obese, format = c("SPSS"))
+```
+###Age
+```{r}
+aggregate(Final_Project$Age ~ Final_Project$Obese, FUN=mean)
+aggregate(Final_Project$Age ~ Final_Project$Obese, FUN=sd)
+```
+###Welfare recipients
+```{r}
+CrossTable(Final_Project$Program, Final_Project$Obese, format = c("SPSS"))
+```
+###Education Level
+```{r}
+CrossTable(Final_Project$Edu_cat, Final_Project$Obese, format = c("SPSS"))
+```
+###Smoking
+```{r}
+CrossTable(Final_Project$Smoking, Final_Project$Obese, format = c("SPSS"))
+```
+
+###Fast food
+```{r}
+aggregate(Final_Project$Fastfood ~ Final_Project$Obese, FUN=mean)
+aggregate(Final_Project$Fastfood ~ Final_Project$Obese, FUN=sd)
+
+```
+
+###Playing computer
+```{r}
+aggregate(Final_Project$Playing_cgames ~ Final_Project$Obese, FUN=mean)
+aggregate(Final_Project$Playing_cgames ~ Final_Project$Obese, FUN=sd)
+```
+
+##Checking linearity assumption using boxTidwell for continuous variables
+```{r}
+#linearity
+Age_times_age <- Final_Project$Age * log(Final_Project$Age)#create term to test linearity
+
+boxTidwell1 <- glm(Obese ~ Age + Age_times_age, data=Final_Project, family="binomial") #Box Tidwell technique, test the assumption of linearity
+
+summary(boxTidwell1)
+
+Fastfood_times_fastfood <- Final_Project$Fastfood * log(Final_Project$Fastfood) 
+
+boxTidwell2 <- glm(Obese ~ Fastfood + Fastfood_times_fastfood, data=Final_Project, family="binomial")
+
+summary(boxTidwell2)
+
+Playing_times_playing <- Final_Project$Playing_cgames * log(Final_Project$Playing_cgames)
+
+boxTidwell3 <- glm(Obese ~ Playing_cgames + Playing_times_playing, data=Final_Project, family = "binomial")
+
+summary(boxTidwell3)
+
+```
+###Since the results from the box tidwell were not significant, the assumptions 
+###for linearity were met for the continuous variables. 
+
+
+
+##Running binary logistic regression with just drinking
+```{r}
+#Run a binary logistic regression 
+model_bi <- glm(Obese ~ Drinking, data=Final_Project,family=binomial())
+summary(model_bi)
+
+#Get the odds ratio and 95%CIs
+exp(cbind("Odds ratio" = coef(model_bi), confint(model_bi, level = 0.95)))
+
+```
+
+##Running the logistic model with covariates
+```{r}
+model1_bi <- glm(Obese ~ Drinking + Age + Sex + Edu_cat + Program + Fastfood + 
+                   Playing_cgames + Smoking, data=Final_Project,family=binomial())
+
+summary(model1_bi)
+exp(cbind("Odds ratio" = coef(model1_bi), confint(model1_bi, level = 0.95)))
+```
+
+##Comparing the full and the model with just drinking variable
+```{r}
+logLik(model1_bi)
+logLik(model_bi) #lower absolute value for the log likelihood is the better model.
+
+lrtest(model_bi, model1_bi)
+```
+
+##Sensitivy and Specificity
+```{r}
+#check percent correctly predicted (example of how to do this) for bmi continuous
+xt <- addmargins(table(round(predict(model1_bi, type="response")), model1_bi$model$Obese))
+  xt #Note the Gold standard (reporting by participant) is the column variable and the model prediction is the row variable. 
+
+#Sensitivity
+  39/1183
+  
+#Specificity
+  2071/2101
+
+#Total Predicted Correctly
+  (2071+39)/3284
+  
+```
+
+##Looking at influence observations
+```{r}
+#Cook's D plot
+plot(model1_bi, which=4, id.n=5, col="red", cex.id=0.60) 
+
+#identify observations with a Cook's D greater than 0.0015 
+y<-as.data.frame(cooks.distance(model1_bi))
+colnames(y)[1]<-"CD"
+y$obs_no<-rownames(y)
+z<-y[which(y$CD>0.0015),]
+z$obs_no
+```
+
+
+##Looking at multicollinearity
+```{r}
+#Variance Inflation Factors
+vif(model1_bi)
+```
+###VIFs look good for all the variables
+
+##Excluding influential observations
+```{r}
+#dropping obs with CD>0.0015
+model1_bi_excluded <- update(model1_bi,subset=c(-230, -1043, -1173, -1355, -3227))
+#compare coefficients between models with and without influential observations, #caveat model number of observations is not the same
+compareCoefs(model1_bi, model1_bi_excluded) 
+```
+##The SEs with and without the influential variables were similar to each other. 
+
